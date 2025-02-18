@@ -10,7 +10,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
 
-
+# Mendapatkan kredensial dari secrets Streamlit
 google_cloud_secrets = st.secrets["google_cloud"]
 
 creds = service_account.Credentials.from_service_account_info(
@@ -30,8 +30,7 @@ creds = service_account.Credentials.from_service_account_info(
     scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 )
 
-
-
+# Cek waktu untuk refresh session state setelah 24 jam
 if "start_time" not in st.session_state:
     st.session_state.start_time = datetime.now()
 
@@ -40,38 +39,25 @@ resetnow = False
 if elapsed_time >= timedelta(hours=24):
     resetnow = True
 
-
-
-# Connect Google SheetAPI
-
+# Connect Google Sheets API
 client = gspread.authorize(creds)
 spreadsheet_id = "1plDWCw7-GpkF6LXzAAQfICcvGMpzYzNPn4KeYeQmUus"
-# # Authorize and open the Google Sheets by Spreadsheet ID
-# client = gspread.authorize(creds)
-# spreadsheet_id = "1plDWCw7-GpkF6LXzAAQfICcvGMpzYzNPn4KeYeQmUus"
 sheet1 = client.open_by_key(spreadsheet_id).worksheet("Input")
 sheet_sub_item = client.open_by_key(spreadsheet_id).worksheet("SubItem")
 sheet_vendor = client.open_by_key(spreadsheet_id).worksheet("Vendor")
 
-
-# Save Sub Item
+# Cache Data: Load SubItem and Vendor once
 if 'subitem' not in st.session_state:
-    with st.spinner("Ambil Data Sub Item dulu..."):
-        st.session_state.subitem = get_as_dataframe(client.open_by_key(spreadsheet_id).worksheet("SubItem"))
+    with st.spinner("Ambil Data Sub Item..."):
+        st.session_state.subitem = get_as_dataframe(sheet_sub_item)
 
-
-# Save Vendor
 if 'vendor' not in st.session_state:
-    with st.spinner("Ambil Data Vendor dulu..."):
-        st.session_state.vendor = get_as_dataframe(client.open_by_key(spreadsheet_id).worksheet("Vendor"))
+    with st.spinner("Ambil Data Vendor..."):
+        st.session_state.vendor = get_as_dataframe(sheet_vendor)
 
-
-
-# Load Data
-with st.spinner("Loading data..."):
-    sub_item_df = st.session_state.subitem
-    vendor_df = st.session_state.vendor
-
+# Prepare Data
+sub_item_df = st.session_state.subitem
+vendor_df = st.session_state.vendor
 
 # Upload Image to Google Drive
 drive_service = build('drive', 'v3', credentials=creds)
@@ -95,22 +81,16 @@ def upload_image_to_drive(image_bytes, image_name):
     file_url = f"https://drive.google.com/uc?id={file['id']}"
     return file_url
 
-
-
-
 st.title("Form Input Data")
 
 date = st.date_input("Date", value=datetime.today(), disabled=True)
 
 no_nota = st.text_input("Masukkan angka (maksimal 4 digit):", max_chars=4)
 
-
 lastwednesday = date - pd.tseries.offsets.Week(weekday=2)
-# If today wednesday = today else lastwednesday
 if date.weekday() == 2:
     lastwednesday = date
 deliverydate = st.date_input("Delivery Date", value=lastwednesday)
-# DeliveryDate should Wednesday
 
 if deliverydate.weekday() != 2:
     st.error("Delivery Date should be Wednesday")
@@ -122,14 +102,14 @@ if checksup:
     if supplier not in vendor_df['Vendor'].values and supplier != "":
         st.warning("Supplier belum ada. Apakah ingin menambahkan?")
         confirm = st.button("Confirm", key='confirm')
-        if confirm: 
+        if confirm:
             sheet_vendor.append_row([supplier])
+            st.session_state.vendor = get_as_dataframe(sheet_vendor)  # Refresh vendor list
     if supplier in vendor_df['Vendor'].values:
         st.warning("Supplier Sudah ada! Apakah ingin mengubah Supplier?")
 else:
     supplier = st.selectbox("Supplier", options=["Pilih Vendor"] + list(vendor_df['Vendor']), key='supplier')
 
-# kategori deafault "Pilih Kategori"
 kategori = st.selectbox("Kategori", options=["Pilih Kategori"] + sorted(sub_item_df["kategori"].astype(str).unique()), index=0, key="kategori")
 checksub = st.checkbox("New Sub item", key='sub')
 if checksub:
@@ -139,28 +119,22 @@ if checksub:
         confirm = st.button("Confirm", key='confirm')
         if confirm:
             sheet_sub_item.append_row([kategori, sub])
+            st.session_state.subitem = get_as_dataframe(sheet_sub_item)  # Refresh sub item list
     if sub in sub_item_df['subitem'].values:
         st.warning("Sub Item Sudah ada! Apakah ingin mengubah Sub Item?")
 else:
     if kategori:
         dropsubitem = sorted(sub_item_df[sub_item_df["kategori"] == kategori]["subitem"].astype(str).unique())
-
     sub = st.selectbox("Sub", sorted(dropsubitem))
-
 
 nilai = st.number_input("Nilai", key='nilai')
 cbm = st.number_input("CBM", key='cbm')
 image = st.file_uploader("Upload Image", type=["png", "jpg", "jpeg"], key='image')
 
-
-
 submit_button = st.button("Submit", key='submit')
 
-# Input box
-
-
 if submit_button:
-    if image: 
+    if image:
         image_bytes = image.getvalue()
         image_url = upload_image_to_drive(image_bytes, image.name)
     else:
@@ -170,13 +144,12 @@ if submit_button:
     delivery_date = deliverydate.strftime("%d/%m/%Y")
     
     # Append data to Google Sheets
-    sheet1.append_row([date_str,no_nota, delivery_date,supplier, kategori, sub, nilai ,cbm , image_url])
+    sheet1.append_row([date_str, no_nota, delivery_date, supplier, kategori, sub, nilai, cbm, image_url])
     
     # Display success message
     st.success("Data berhasil disimpan ke Google Sheets!")
     
     # Refresh the page after submitting the data
-    time.sleep(1)
-    if resetnow == True:
+    if resetnow:
         st.session_state.clear()
     streamlit_js_eval(js_expressions="parent.window.location.reload()")
